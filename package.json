@@ -1,0 +1,22 @@
+{
+  "name": "agentboundaccount",
+  "version": "1.0.0",
+  "description": "usdt 0x7169D38820dfd117C3FA1f22a697dBA58d90BA06",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ethers": "^6.16.0",
+    "permissionless": "^0.3.4",
+    "viem": "^2.45.1"
+  }
+}

@@ -22,7 +22,7 @@
       "hash": "0x1d2a085f5528d00456afb19f0a711a8d40c1e661addc1f0627a275678284292e",
       "transactionType": "CREATE",
       "contractName": "Agent6551Account",
-      "contractAddress": "0x12ffe620a83b388957dbebf2234d62d5b57d0ac5",
+      "contractAddress": "0x1bF255cB626B9157A1c94FEec3f120B452b0D9C8",
       "function": null,
       "arguments": null,
       "transaction": {
@@ -109,7 +109,7 @@
       "effectiveGasPrice": "0x3e3fce97",
       "from": "0x93c7629916a53de8a7d46609a0585fd7fedf3b45",
       "to": null,
-      "contractAddress": "0x12ffe620a83b388957dbebf2234d62d5b57d0ac5"
+      "contractAddress": "0x1bF255cB626B9157A1c94FEec3f120B452b0D9C8"
     },
     {
       "status": "0x1",

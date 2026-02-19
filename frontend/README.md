@@ -21,7 +21,7 @@ It helps the NFT owner configure session permissions for an ERC-6551 account, wh
 - npm
 - Deployed contracts on Sepolia:
   - ERC-6551 Registry: `0xf480116f21052c3385fa200ae6f86f65be1ddd96`
-  - `Agent6551Account` implementation: `0x12ffe620a83b388957dbebf2234d62d5b57d0ac5`
+  - `Agent6551Account` implementation: `0x1bF255cB626B9157A1c94FEec3f120B452b0D9C8`
 
 If you are running your own deployment, replace these with your own contract addresses.
 
@@ -31,7 +31,7 @@ Create `frontend/.env.local`:
 
 ```bash
 NEXT_PUBLIC_REGISTRY_ADDRESS=0x...
-NEXT_PUBLIC_IMPLEMENTATION_ADDRESS=0x...
+NEXT_PUBLIC_IMPLEMENTATION_ADDRESS=0x1bF255cB626B9157A1c94FEec3f120B452b0D9C8
 NEXT_PUBLIC_RPC_URL=...
 NEXT_PUBLIC_ALCHEMY_API_KEY=...
 ```

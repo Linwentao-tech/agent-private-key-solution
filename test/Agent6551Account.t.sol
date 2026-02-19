@@ -11,15 +11,14 @@ import {MockShop} from "../src/mocks/MockShop.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 
 contract Agent6551AccountTest is Test {
-    bytes32 internal constant SESSION_CALL_TYPEHASH = keccak256(
-        "SessionCall(bytes32 sessionId,address to,uint256 value,bytes32 dataHash,uint256 nonce,uint256 deadline,uint256 pullAmount)"
+    bytes32 internal constant POLICY_CALL_TYPEHASH = keccak256(
+        "PolicyCall(address to,uint256 value,bytes32 dataHash,uint256 nonce,uint256 deadline,uint256 pullAmount)"
     );
-    bytes32 internal constant SESSION_ACTIVATION_TYPEHASH =
-        keccak256("SessionActivation(bytes32 sessionId,address signer,uint256 deadline)");
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
-    uint256 internal constant SESSION_PK = 0xA11CE;
+    uint256 internal constant POLICY_SIGNER_PK = 0xA11CE;
+    uint256 internal constant NEW_POLICY_SIGNER_PK = 0xC0FFEE;
     uint256 internal constant OWNER_PK = 0xB0B;
 
     ERC6551Registry internal registry;
@@ -30,8 +29,7 @@ contract Agent6551AccountTest is Test {
 
     address internal tba;
     address internal nftOwner;
-    address internal sessionSigner;
-    bytes32 internal sessionId;
+    address internal policySigner;
 
     function setUp() public {
         registry = new ERC6551Registry();
@@ -46,6 +44,7 @@ contract Agent6551AccountTest is Test {
         tba = registry.createAccount(address(implementation), bytes32(0), block.chainid, address(nft), tokenId);
 
         token.mint(nftOwner, 200e6);
+
         vm.prank(nftOwner);
         token.approve(tba, type(uint256).max);
 
@@ -53,25 +52,20 @@ contract Agent6551AccountTest is Test {
         Agent6551Account(payable(tba))
             .execute(address(token), 0, abi.encodeCall(token.approve, (address(shop), type(uint256).max)), 0);
 
-        sessionSigner = vm.addr(SESSION_PK);
-        sessionId = keccak256("session-1");
+        policySigner = vm.addr(POLICY_SIGNER_PK);
 
         address[] memory targets = new address[](1);
         targets[0] = address(shop);
 
         vm.prank(nftOwner);
         Agent6551Account(payable(tba))
-            .createSession(sessionId, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        vm.prank(sessionSigner);
-        Agent6551Account(payable(tba)).activateSession(sessionId);
+            .configurePolicy(policySigner, uint64(block.timestamp + 1 days), address(token), 100e6, targets, true);
     }
 
-    function testExecuteWithSessionSuccess() public {
+    function testExecuteWithPolicySuccess() public {
         uint256 price = 1e6;
 
-        Agent6551Account.SessionCallRequest memory req = Agent6551Account.SessionCallRequest({
-            sessionId: sessionId,
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
             to: address(shop),
             value: 0,
             data: abi.encodeCall(shop.buy, (1, price)),
@@ -80,20 +74,19 @@ contract Agent6551AccountTest is Test {
             pullAmount: price
         });
 
-        bytes memory signature = _signRequest(req);
+        bytes memory signature = _signRequest(req, POLICY_SIGNER_PK);
 
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        Agent6551Account(payable(tba)).executeWithPolicy(req, signature);
 
         assertEq(token.balanceOf(address(shop)), price);
-        (,,, uint256 spent,,) = Agent6551Account(payable(tba)).sessions(sessionId);
+        (,,, uint256 spent,,) = Agent6551Account(payable(tba)).policy();
         assertEq(spent, price);
     }
 
-    function testExecuteWithSessionNonceReplayReverts() public {
+    function testExecuteWithPolicyNonceReplayReverts() public {
         uint256 price = 1e6;
 
-        Agent6551Account.SessionCallRequest memory req = Agent6551Account.SessionCallRequest({
-            sessionId: sessionId,
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
             to: address(shop),
             value: 0,
             data: abi.encodeCall(shop.buy, (1, price)),
@@ -102,18 +95,17 @@ contract Agent6551AccountTest is Test {
             pullAmount: price
         });
 
-        bytes memory signature = _signRequest(req);
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        bytes memory signature = _signRequest(req, POLICY_SIGNER_PK);
+        Agent6551Account(payable(tba)).executeWithPolicy(req, signature);
 
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.NonceAlreadyUsed.selector, sessionId, 2));
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.NonceAlreadyUsed.selector, 2));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, signature);
     }
 
-    function testExecuteWithSessionExpiredReverts() public {
+    function testExecuteWithPolicyExpiredReverts() public {
         uint256 price = 1e6;
 
-        Agent6551Account.SessionCallRequest memory req = Agent6551Account.SessionCallRequest({
-            sessionId: sessionId,
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
             to: address(shop),
             value: 0,
             data: abi.encodeCall(shop.buy, (1, price)),
@@ -124,15 +116,12 @@ contract Agent6551AccountTest is Test {
 
         vm.warp(block.timestamp + 1 days + 1);
 
-        bytes memory signature = _signRequest(req);
-
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.SessionExpired.selector, sessionId));
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.PolicyExpired.selector, uint64(block.timestamp - 1)));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, _signRequest(req, POLICY_SIGNER_PK));
     }
 
-    function testExecuteWithSessionTargetNotAllowedReverts() public {
-        Agent6551Account.SessionCallRequest memory req = Agent6551Account.SessionCallRequest({
-            sessionId: sessionId,
+    function testExecuteWithPolicyTargetNotAllowedReverts() public {
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
             to: address(token),
             value: 0,
             data: abi.encodeCall(token.transfer, (address(0xBEEF), 1e6)),
@@ -141,17 +130,16 @@ contract Agent6551AccountTest is Test {
             pullAmount: 0
         });
 
-        bytes memory signature = _signRequest(req);
+        bytes memory signature = _signRequest(req, POLICY_SIGNER_PK);
 
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.TargetNotAllowed.selector, sessionId, address(token)));
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.TargetNotAllowed.selector, address(token)));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, signature);
     }
 
-    function testExecuteWithSessionBudgetExceededReverts() public {
+    function testExecuteWithPolicyBudgetExceededReverts() public {
         uint256 price = 101e6;
 
-        Agent6551Account.SessionCallRequest memory req = Agent6551Account.SessionCallRequest({
-            sessionId: sessionId,
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
             to: address(shop),
             value: 0,
             data: abi.encodeCall(shop.buy, (1, price)),
@@ -160,219 +148,124 @@ contract Agent6551AccountTest is Test {
             pullAmount: price
         });
 
-        bytes memory signature = _signRequest(req);
+        bytes memory signature = _signRequest(req, POLICY_SIGNER_PK);
 
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.BudgetExceeded.selector, sessionId, 101e6, 100e6));
-        Agent6551Account(payable(tba)).executeWithSession(req, signature);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.BudgetExceeded.selector, 101e6, 100e6));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, signature);
     }
 
-    function testActivateSessionBySigSuccess() public {
-        bytes32 sid = keccak256("session-by-sig-ok");
+    function testConfigurePolicyOnlyOwner() public {
         address[] memory targets = new address[](1);
         targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        uint256 deadline = block.timestamp + 1 hours;
-        bytes memory sig = _signActivation(sid, sessionSigner, deadline, SESSION_PK);
-
-        vm.prank(address(0xCAFE));
-        Agent6551Account(payable(tba)).activateSessionBySig(sid, sessionSigner, deadline, sig);
-
-        (address signer,,,,,) = Agent6551Account(payable(tba)).sessions(sid);
-        assertEq(signer, sessionSigner);
-    }
-
-    function testActivateSessionBySigBadSignatureReverts() public {
-        bytes32 sid = keccak256("session-by-sig-bad");
-        address[] memory targets = new address[](1);
-        targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        uint256 deadline = block.timestamp + 1 hours;
-        bytes memory badSig = _signActivation(sid, sessionSigner, deadline, OWNER_PK);
-
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.InvalidSigner.selector, vm.addr(OWNER_PK)));
-        Agent6551Account(payable(tba)).activateSessionBySig(sid, sessionSigner, deadline, badSig);
-    }
-
-    function testGetSessionIdsOnlyOwner() public {
-        // Owner can read.
-        vm.prank(nftOwner);
-        bytes32[] memory ids = Agent6551Account(payable(tba)).getSessionIds(0, 10);
-        assertEq(ids.length, 1);
-        assertEq(ids[0], sessionId);
-
-        vm.prank(nftOwner);
-        uint256 cnt = Agent6551Account(payable(tba)).sessionCount();
-        assertEq(cnt, 1);
-
-        // Non-owner reverts.
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.NotTokenOwner.selector, address(this)));
-        Agent6551Account(payable(tba)).getSessionIds(0, 10);
 
         vm.expectRevert(abi.encodeWithSelector(Agent6551Account.NotTokenOwner.selector, address(this)));
-        Agent6551Account(payable(tba)).sessionCount();
+        Agent6551Account(payable(tba))
+            .configurePolicy(policySigner, uint64(block.timestamp + 1 days), address(token), 100e6, targets, true);
     }
 
-    function testGetSessionIdsPagination() public {
-        bytes32 sid2 = keccak256("session-2");
-        bytes32 sid3 = keccak256("session-3");
+    function testUpdatePolicyOnlyOwner() public {
+        address[] memory targets = new address[](1);
+        targets[0] = address(shop);
+
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.NotTokenOwner.selector, address(this)));
+        Agent6551Account(payable(tba)).updatePolicy(uint64(block.timestamp + 2 days), 200e6, targets, true);
+    }
+
+    function testUpdatePolicyReplacesTargets() public {
+        address[] memory targets = new address[](1);
+        targets[0] = address(token);
+
+        vm.prank(nftOwner);
+        Agent6551Account(payable(tba)).updatePolicy(uint64(block.timestamp + 2 days), 120e6, targets, true);
+
+        assertTrue(Agent6551Account(payable(tba)).policyTargetAllowed(address(token)));
+        assertFalse(Agent6551Account(payable(tba)).policyTargetAllowed(address(shop)));
+
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
+            to: address(shop),
+            value: 0,
+            data: abi.encodeCall(shop.buy, (1, 1e6)),
+            nonce: 6,
+            deadline: block.timestamp + 1 hours,
+            pullAmount: 1e6
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.TargetNotAllowed.selector, address(shop)));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, _signRequest(req, POLICY_SIGNER_PK));
+    }
+
+    function testRotatePolicySigner() public {
+        address newSigner = vm.addr(NEW_POLICY_SIGNER_PK);
+
+        vm.prank(nftOwner);
+        Agent6551Account(payable(tba)).rotatePolicySigner(newSigner);
+
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
+            to: address(shop),
+            value: 0,
+            data: abi.encodeCall(shop.buy, (1, 1e6)),
+            nonce: 7,
+            deadline: block.timestamp + 1 hours,
+            pullAmount: 1e6
+        });
+
+        bytes memory oldSig = _signRequest(req, POLICY_SIGNER_PK);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.InvalidSigner.selector, policySigner));
+        Agent6551Account(payable(tba)).executeWithPolicy(req, oldSig);
+
+        bytes memory newSig = _signRequest(req, NEW_POLICY_SIGNER_PK);
+        Agent6551Account(payable(tba)).executeWithPolicy(req, newSig);
+
+        assertEq(token.balanceOf(address(shop)), 1e6);
+    }
+
+    function testRevokePolicyDisablesExecution() public {
+        vm.prank(nftOwner);
+        Agent6551Account(payable(tba)).revokePolicy();
+
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
+            to: address(shop),
+            value: 0,
+            data: abi.encodeCall(shop.buy, (1, 1e6)),
+            nonce: 8,
+            deadline: block.timestamp + 1 hours,
+            pullAmount: 1e6
+        });
+
+        vm.expectRevert(Agent6551Account.PolicyNotActive.selector);
+        Agent6551Account(payable(tba)).executeWithPolicy(req, _signRequest(req, POLICY_SIGNER_PK));
+    }
+
+    function testUpdatePolicyBelowSpentReverts() public {
+        Agent6551Account.PolicyCallRequest memory req = Agent6551Account.PolicyCallRequest({
+            to: address(shop),
+            value: 0,
+            data: abi.encodeCall(shop.buy, (1, 2e6)),
+            nonce: 9,
+            deadline: block.timestamp + 1 hours,
+            pullAmount: 2e6
+        });
+
+        Agent6551Account(payable(tba)).executeWithPolicy(req, _signRequest(req, POLICY_SIGNER_PK));
+
         address[] memory targets = new address[](1);
         targets[0] = address(shop);
 
         vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid2, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid3, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        vm.prank(nftOwner);
-        bytes32[] memory page1 = Agent6551Account(payable(tba)).getSessionIds(0, 2);
-        assertEq(page1.length, 2);
-        assertEq(page1[0], sessionId);
-        assertEq(page1[1], sid2);
-
-        vm.prank(nftOwner);
-        bytes32[] memory page2 = Agent6551Account(payable(tba)).getSessionIds(2, 2);
-        assertEq(page2.length, 1);
-        assertEq(page2[0], sid3);
+        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.PolicyMaxTotalBelowSpent.selector, 2e6, 1e6));
+        Agent6551Account(payable(tba)).updatePolicy(uint64(block.timestamp + 2 days), 1e6, targets, true);
     }
 
-    function testGetActiveSessionIdsFiltersExpiredAndRevoked() public {
-        bytes32 sid2 = keccak256("active-2");
-        bytes32 sid3 = keccak256("expired-3");
-        bytes32 sid4 = keccak256("revoked-4");
-        address[] memory targets = new address[](1);
-        targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid2, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(
-                sid3,
-                uint64(block.timestamp + 1), // will expire after warp
-                address(token),
-                100e6,
-                targets
-            );
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba))
-            .createSession(sid4, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-
-        vm.prank(nftOwner);
-        Agent6551Account(payable(tba)).revokeSession(sid4);
-
-        vm.warp(block.timestamp + 2);
-
-        vm.prank(nftOwner);
-        bytes32[] memory ids = Agent6551Account(payable(tba)).getActiveSessionIds(0, 10);
-
-        // sessionId (from setUp) and sid2 should remain active
-        assertEq(ids.length, 2);
-        assertEq(ids[0], sessionId);
-        assertEq(ids[1], sid2);
-    }
-
-    function testCreateSessionDuplicateSessionIdReverts() public {
-        address[] memory targets = new address[](1);
-        targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.SessionAlreadyExists.selector, sessionId));
-        Agent6551Account(payable(tba))
-            .createSession(sessionId, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-    }
-
-    function testCreateSessionInvalidValidUntilReverts() public {
-        bytes32 sid = keccak256("bad-valid-until");
-        address[] memory targets = new address[](1);
-        targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        vm.expectRevert(
-            abi.encodeWithSelector(Agent6551Account.InvalidSessionValidUntil.selector, uint64(block.timestamp))
-        );
-        Agent6551Account(payable(tba)).createSession(sid, uint64(block.timestamp), address(token), 100e6, targets);
-    }
-
-    function testCreateSessionZeroMaxTotalReverts() public {
-        bytes32 sid = keccak256("bad-max-total");
-        address[] memory targets = new address[](1);
-        targets[0] = address(shop);
-
-        vm.prank(nftOwner);
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.InvalidSessionMaxTotal.selector, 0));
-        Agent6551Account(payable(tba)).createSession(sid, uint64(block.timestamp + 1 days), address(token), 0, targets);
-    }
-
-    function testCreateSessionEmptyTargetsReverts() public {
-        bytes32 sid = keccak256("bad-targets-empty");
-        address[] memory targets = new address[](0);
-
-        vm.prank(nftOwner);
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.InvalidSessionTargets.selector));
-        Agent6551Account(payable(tba))
-            .createSession(sid, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-    }
-
-    function testCreateSessionZeroAddressTargetReverts() public {
-        bytes32 sid = keccak256("bad-targets-zero");
-        address[] memory targets = new address[](1);
-        targets[0] = address(0);
-
-        vm.prank(nftOwner);
-        vm.expectRevert(abi.encodeWithSelector(Agent6551Account.InvalidSessionTarget.selector, address(0)));
-        Agent6551Account(payable(tba))
-            .createSession(sid, uint64(block.timestamp + 1 days), address(token), 100e6, targets);
-    }
-
-    function _signRequest(Agent6551Account.SessionCallRequest memory req)
+    function _signRequest(Agent6551Account.PolicyCallRequest memory req, uint256 pk)
         internal
         view
         returns (bytes memory signature)
     {
         bytes32 structHash = keccak256(
             abi.encode(
-                SESSION_CALL_TYPEHASH,
-                req.sessionId,
-                req.to,
-                req.value,
-                keccak256(req.data),
-                req.nonce,
-                req.deadline,
-                req.pullAmount
+                POLICY_CALL_TYPEHASH, req.to, req.value, keccak256(req.data), req.nonce, req.deadline, req.pullAmount
             )
         );
-
-        bytes32 domainSeparator = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Agent6551Account")), keccak256(bytes("1")), block.chainid, tba
-            )
-        );
-
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SESSION_PK, digest);
-        signature = abi.encodePacked(r, s, v);
-    }
-
-    function _signActivation(bytes32 sid, address signer, uint256 deadline, uint256 pk)
-        internal
-        view
-        returns (bytes memory signature)
-    {
-        bytes32 structHash = keccak256(abi.encode(SESSION_ACTIVATION_TYPEHASH, sid, signer, deadline));
 
         bytes32 domainSeparator = keccak256(
             abi.encode(

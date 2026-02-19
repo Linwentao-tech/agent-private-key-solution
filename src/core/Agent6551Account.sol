@@ -13,65 +13,148 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC6551Account} from "erc6551/interfaces/IERC6551Account.sol";
 import {IERC6551Executable} from "erc6551/interfaces/IERC6551Executable.sol";
 
+/**
+ * @title IERC721OwnerOf
+ * @notice Minimal interface for ERC-721 ownerOf function
+ */
 interface IERC721OwnerOf {
-    /// @dev 只保留 ownerOf 最小接口，避免引入完整 IERC721 依赖。
     function ownerOf(uint256 tokenId) external view returns (address owner);
 }
 
-/// @title Agent6551Account
-/// @notice ERC-6551 账户 + Session 授权执行
-/// @dev 设计目标：
-/// 1) owner 只做一次性策略配置（额度、白名单、有效期）
-/// 2) agent 自己激活并使用 session key 执行后续操作
-/// 3) 资金来源是 owner，对外执行主体是 TBA
+/**
+ * @title Agent6551Account
+ * @notice ERC-6551 Token Bound Account with Agent Policy authorization
+ * @dev
+ *   This contract implements a Token Bound Account (TBA) that can be controlled by:
+ *   1. The NFT owner (full control)
+ *   2. An authorized Agent (limited control via Policy)
+ *
+ *   Architecture:
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │                     NFT Owner                               │
+ *   │                   (Full Control)                            │
+ *   │        configurePolicy / updatePolicy / execute             │
+ *   └─────────────────────────┬───────────────────────────────────┘
+ *                             │ authorizes
+ *                             ▼
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │                     Policy                                  │
+ *   │   - signer: Agent address who can execute                   │
+ *   │   - validUntil: Expiration timestamp                        │
+ *   │   - maxTotal: Maximum budget in token units                 │
+ *   │   - spent: Accumulated spending                             │
+ *   │   - budgetToken: Token used for budget tracking             │
+ *   │   - active: Whether policy is enabled                       │
+ *   │   - targets[]: Whitelisted contract addresses               │
+ *   └─────────────────────────┬───────────────────────────────────┘
+ *                             │ restricts
+ *                             ▼
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │                     Agent                                   │
+ *   │               (Limited Control)                             │
+ *   │              executeWithPolicy                              │
+ *   │   - Must be policy.signer                                   │
+ *   │   - Can only call whitelisted targets                       │
+ *   │   - Spending limited by maxTotal                            │
+ *   │   - Cannot exceed validUntil                                │
+ *   └─────────────────────────────────────────────────────────────┘
+ */
 contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executable, EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    // ============ Errors ============
+
+    /// @dev Invalid signer for operation
     error InvalidSigner(address signer);
+
+    /// @dev Invalid operation type (only CALL=0 supported)
     error InvalidOperation(uint8 operation);
+
+    /// @dev Caller is not the NFT owner
     error NotTokenOwner(address caller);
-    error SessionNotFound(bytes32 sessionId);
-    error SessionNotActivated(bytes32 sessionId);
-    error SessionAlreadyExists(bytes32 sessionId);
-    error SessionAlreadyActivated(bytes32 sessionId);
-    error SessionIsRevoked(bytes32 sessionId);
-    error SessionExpired(bytes32 sessionId);
+
+    /// @dev Policy has not been configured
+    error PolicyNotConfigured();
+
+    /// @dev Policy is not active
+    error PolicyNotActive();
+
+    /// @dev Policy has expired
+    error PolicyExpired(uint64 validUntil);
+
+    /// @dev Signature deadline has passed
     error SignatureExpired(uint256 deadline);
-    error NonceAlreadyUsed(bytes32 sessionId, uint256 nonce);
-    error TargetNotAllowed(bytes32 sessionId, address target);
-    error BudgetExceeded(bytes32 sessionId, uint256 attempted, uint256 maxAllowed);
-    error InvalidSessionBudgetToken();
-    error InvalidSessionValidUntil(uint64 validUntil);
-    error InvalidSessionMaxTotal(uint256 maxTotal);
-    error InvalidSessionTargets();
-    error InvalidSessionTarget(address target);
 
-    /// @dev EIP-712 结构定义哈希，前后端必须严格一致。
-    bytes32 public constant SESSION_CALL_TYPEHASH = keccak256(
-        "SessionCall(bytes32 sessionId,address to,uint256 value,bytes32 dataHash,uint256 nonce,uint256 deadline,uint256 pullAmount)"
+    /// @dev Nonce already used (replay protection)
+    error NonceAlreadyUsed(uint256 nonce);
+
+    /// @dev Target address not in whitelist
+    error TargetNotAllowed(address target);
+
+    /// @dev Spending would exceed budget
+    error BudgetExceeded(uint256 attempted, uint256 maxAllowed);
+
+    /// @dev New maxTotal is below already spent amount
+    error PolicyMaxTotalBelowSpent(uint256 spent, uint256 maxTotal);
+
+    /// @dev Invalid policy signer (zero address)
+    error InvalidPolicySigner(address signer);
+
+    /// @dev Invalid budget token (zero address)
+    error InvalidPolicyBudgetToken();
+
+    /// @dev Invalid validUntil (must be future)
+    error InvalidPolicyValidUntil(uint64 validUntil);
+
+    /// @dev Invalid maxTotal (must be > 0)
+    error InvalidPolicyMaxTotal(uint256 maxTotal);
+
+    /// @dev Empty targets array
+    error InvalidPolicyTargets();
+
+    /// @dev Invalid target address (zero address)
+    error InvalidPolicyTarget(address target);
+
+    // ============ Constants ============
+
+    /**
+     * @dev EIP-712 typehash for PolicyCall struct
+     * Used for typed data signing by the Agent
+     */
+    bytes32 public constant POLICY_CALL_TYPEHASH = keccak256(
+        "PolicyCall(address to,uint256 value,bytes32 dataHash,uint256 nonce,uint256 deadline,uint256 pullAmount)"
     );
-    bytes32 public constant SESSION_ACTIVATION_TYPEHASH =
-        keccak256("SessionActivation(bytes32 sessionId,address signer,uint256 deadline)");
 
-    /// @dev Session 状态：
-    /// signer      会话签名者（agent 激活后绑定）
-    /// validUntil  到期时间（unix 秒）
-    /// maxTotal    总预算上限
-    /// spent       已消费累计
-    /// budgetToken 预算币种（如 USDT）
-    /// revoked     owner 是否已撤销
-    struct Session {
+    // ============ Structs ============
+
+    /**
+     * @notice Policy configuration for Agent authorization
+     * @param signer        Agent address authorized to execute via policy
+     * @param validUntil    Timestamp when policy expires
+     * @param maxTotal      Maximum total spending allowed (in token units)
+     * @param spent         Accumulated spending so far
+     * @param budgetToken   Token address used for budget tracking
+     * @param active        Whether policy is currently enabled
+     */
+    struct Policy {
         address signer;
         uint64 validUntil;
         uint256 maxTotal;
         uint256 spent;
         address budgetToken;
-        bool revoked;
+        bool active;
     }
 
-    /// @dev 一次 session 执行请求的数据结构。
-    /// data 使用 bytes，签名里只放 keccak256(data) 以减少 EIP-712 消息体体积。
-    struct SessionCallRequest {
-        bytes32 sessionId;
+    /**
+     * @notice Request structure for policy-gated execution
+     * @param to            Target contract address
+     * @param value         ETH value to send
+     * @param data          Calldata to execute
+     * @param nonce         Unique nonce for replay protection
+     * @param deadline      Signature expiration timestamp
+     * @param pullAmount    Amount of budgetToken to pull from owner
+     */
+    struct PolicyCallRequest {
         address to;
         uint256 value;
         bytes data;
@@ -80,192 +163,209 @@ contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executa
         uint256 pullAmount;
     }
 
-    /// @dev 建议每次状态变化递增，符合 ERC-6551 对 state() 的预期语义。
+    // ============ State Variables ============
+
+    /// @dev State counter for tracking account mutations
     uint256 public state;
 
-    /// @dev sessionId => Session 配置
-    mapping(bytes32 => Session) public sessions;
-    /// @dev sessionId => 目标合约地址白名单（to）
-    mapping(bytes32 => mapping(address => bool)) public sessionTargetAllowed;
-    /// @dev sessionId => nonce 是否已使用（防重放）
-    mapping(bytes32 => mapping(uint256 => bool)) public usedSessionNonce;
+    /// @dev Single policy configuration (replaces session model)
+    Policy public policy;
 
-    /// @dev 链上可枚举的 sessionId 索引（mapping 本身不可枚举，所以需要额外数组）。
-    /// 只允许 NFT owner 读取，用于前端跨设备恢复 “我在这个 TBA 上创建过哪些 session”。
-    /// 注意：链上数据本质公开，这个限制只能阻止“通过 ABI 直接调用”，不提供真正隐私。
-    bytes32[] private _sessionIndex;
-    mapping(bytes32 => bool) private _sessionIndexed;
+    /// @dev Mapping of whitelisted target addresses
+    mapping(address => bool) public policyTargetAllowed;
 
-    event SessionCreated(
-        bytes32 indexed sessionId, address indexed signer, uint64 validUntil, address budgetToken, uint256 maxTotal
+    /// @dev Mapping of used nonces for replay protection
+    mapping(uint256 => bool) public usedPolicyNonce;
+
+    /// @dev Array of policy targets for enumeration
+    address[] private _policyTargets;
+
+    /// @dev Mapping to track indexed targets
+    mapping(address => bool) private _policyTargetIndexed;
+
+    // ============ Events ============
+
+    /**
+     * @notice Emitted when policy is configured
+     * @param signer        Agent address
+     * @param validUntil    Expiration timestamp
+     * @param budgetToken   Token for budget tracking
+     * @param maxTotal      Maximum spending
+     * @param active        Whether enabled
+     */
+    event PolicyConfigured(
+        address indexed signer, uint64 validUntil, address budgetToken, uint256 maxTotal, bool active
     );
-    event SessionActivated(bytes32 indexed sessionId, address indexed signer);
-    event SessionRevoked(bytes32 indexed sessionId);
-    event SessionExecuted(bytes32 indexed sessionId, uint256 indexed nonce, uint256 spend, uint256 totalSpent);
 
+    /**
+     * @notice Emitted when policy is updated
+     */
+    event PolicyUpdated(address indexed signer, uint64 validUntil, address budgetToken, uint256 maxTotal, bool active);
+
+    /**
+     * @notice Emitted when policy signer is rotated
+     * @param previousSigner    Old agent address
+     * @param newSigner         New agent address
+     */
+    event PolicySignerRotated(address indexed previousSigner, address indexed newSigner);
+
+    /**
+     * @notice Emitted when policy is revoked
+     */
+    event PolicyRevoked();
+
+    /**
+     * @notice Emitted when policy execution occurs
+     * @param nonce         Unique identifier for this execution
+     * @param spend         Amount spent in this execution
+     * @param totalSpent    Total accumulated spending
+     */
+    event PolicyExecuted(uint256 indexed nonce, uint256 spend, uint256 totalSpent);
+
+    // ============ Constructor ============
+
+    /**
+     * @notice Initialize EIP-712 domain separator
+     */
     constructor() EIP712("Agent6551Account", "1") {}
 
+    // ============ Receive ============
+
+    /// @dev Receive ETH
     receive() external payable {}
 
+    // ============ Modifiers ============
+
+    /// @dev Restricts access to NFT owner only
     modifier onlyTokenOwner() {
         _onlyTokenOwner();
         _;
     }
 
-    /// @notice owner 创建“模板 session”，定义后续 agent 行为的规则和预算，但不绑定具体 signer。
-    function createSession(
-        bytes32 sessionId,
+    // ============ Policy Management (Owner Only) ============
+
+    /**
+     * @notice Configure a new policy for Agent authorization
+     * @dev Only callable by NFT owner. Replaces any existing policy.
+     * @param signer         Agent address to authorize
+     * @param validUntil     Expiration timestamp (must be future)
+     * @param budgetToken    Token for budget tracking
+     * @param maxTotal       Maximum spending allowed
+     * @param targets        Whitelisted contract addresses
+     * @param active         Whether to enable immediately
+     */
+    function configurePolicy(
+        address signer,
         uint64 validUntil,
         address budgetToken,
         uint256 maxTotal,
-        address[] calldata targets
+        address[] calldata targets,
+        bool active
     ) external onlyTokenOwner {
-        if (budgetToken == address(0)) revert InvalidSessionBudgetToken();
-        if (validUntil <= block.timestamp) revert InvalidSessionValidUntil(validUntil);
-        if (maxTotal == 0) revert InvalidSessionMaxTotal(maxTotal);
-        if (targets.length == 0) revert InvalidSessionTargets();
+        if (signer == address(0)) revert InvalidPolicySigner(signer);
+        if (budgetToken == address(0)) revert InvalidPolicyBudgetToken();
+        if (validUntil <= block.timestamp) revert InvalidPolicyValidUntil(validUntil);
+        if (maxTotal == 0) revert InvalidPolicyMaxTotal(maxTotal);
 
-        // Prevent re-creating a sessionId. Otherwise, old targets/nonces could remain,
-        // which becomes a security foot-gun.
-        Session storage s = sessions[sessionId];
-        if (s.budgetToken != address(0)) revert SessionAlreadyExists(sessionId);
+        _replacePolicyTargets(targets);
 
-        // Index this sessionId for on-chain enumeration (dedup).
-        if (!_sessionIndexed[sessionId]) {
-            _sessionIndexed[sessionId] = true;
-            _sessionIndex.push(sessionId);
-        }
-        // 模板阶段 signer 固定为 0，直到 agent 调用 activateSession 绑定。
-        // 定义初始化参数，后续 agent 激活时会继承这些参数。
-        s.signer = address(0);
-        s.validUntil = validUntil;
-        s.maxTotal = maxTotal;
-        s.spent = 0;
-        s.budgetToken = budgetToken;
-        s.revoked = false;
+        policy.signer = signer;
+        policy.validUntil = validUntil;
+        policy.maxTotal = maxTotal;
+        policy.spent = 0;
+        policy.budgetToken = budgetToken;
+        policy.active = active;
 
-        uint256 len = targets.length; //白名单允许的合约地址数量
-        for (uint256 i = 0; i < len; ++i) {
-            if (targets[i] == address(0)) revert InvalidSessionTarget(targets[i]);
-            sessionTargetAllowed[sessionId][targets[i]] = true;
-        }
-
-        emit SessionCreated(sessionId, address(0), validUntil, budgetToken, maxTotal);
+        emit PolicyConfigured(signer, validUntil, budgetToken, maxTotal, active);
     }
 
-    /// @notice 返回该 TBA 上已创建过的 session 数量（仅 NFT owner 可读）。
-    function sessionCount() external view onlyTokenOwner returns (uint256) {
-        return _sessionIndex.length;
-    }
-
-    /// @notice 分页读取该 TBA 上已创建过的 sessionId（仅 NFT owner 可读）。
-    /// @dev limit=0 会返回空数组；offset 超出范围也返回空数组。
-    function getSessionIds(uint256 offset, uint256 limit) external view onlyTokenOwner returns (bytes32[] memory ids) {
-        uint256 len = _sessionIndex.length;
-        if (limit == 0 || offset >= len) return new bytes32[](0);
-
-        uint256 end = offset + limit;
-        if (end > len) end = len;
-
-        uint256 outLen = end - offset;
-        ids = new bytes32[](outLen);
-        for (uint256 i = 0; i < outLen; ++i) {
-            ids[i] = _sessionIndex[offset + i];
-        }
-    }
-
-    /// @notice 分页读取“未过期且未撤销”的 sessionId（仅 NFT owner 可读）。
-    /// @dev 这是对 _sessionIndex 的过滤视图：
-    /// - 不过期：block.timestamp <= validUntil
-    /// - 未撤销：revoked == false
-    /// - 存在：budgetToken != address(0)
-    /// offset/limit 是针对“过滤后的列表”做分页。
-    function getActiveSessionIds(uint256 offset, uint256 limit)
+    /**
+     * @notice Update existing policy parameters
+     * @dev Only callable by NFT owner. Cannot set maxTotal below spent.
+     * @param validUntil    New expiration timestamp
+     * @param maxTotal      New maximum spending
+     * @param targets       New whitelisted addresses
+     * @param active        Enable/disable policy
+     */
+    function updatePolicy(uint64 validUntil, uint256 maxTotal, address[] calldata targets, bool active)
         external
-        view
         onlyTokenOwner
-        returns (bytes32[] memory ids)
     {
-        if (limit == 0) return new bytes32[](0);
+        Policy storage p = policy;
+        if (p.budgetToken == address(0)) revert PolicyNotConfigured();
+        if (validUntil <= block.timestamp) revert InvalidPolicyValidUntil(validUntil);
+        if (maxTotal == 0) revert InvalidPolicyMaxTotal(maxTotal);
+        if (maxTotal < p.spent) revert PolicyMaxTotalBelowSpent(p.spent, maxTotal);
 
-        uint256 len = _sessionIndex.length;
-        if (len == 0) return new bytes32[](0);
+        _replacePolicyTargets(targets);
 
-        // Allocate max possible and shrink at the end.
-        ids = new bytes32[](limit);
-        uint256 skipped = 0;
-        uint256 out = 0;
+        p.validUntil = validUntil;
+        p.maxTotal = maxTotal;
+        p.active = active;
 
+        emit PolicyUpdated(p.signer, validUntil, p.budgetToken, maxTotal, active);
+    }
+
+    /**
+     * @notice Rotate the policy signer to a new Agent
+     * @dev Only callable by NFT owner. Useful for key rotation.
+     * @param newSigner    New Agent address
+     */
+    function rotatePolicySigner(address newSigner) external onlyTokenOwner {
+        Policy storage p = policy;
+        if (p.budgetToken == address(0)) revert PolicyNotConfigured();
+        if (newSigner == address(0)) revert InvalidPolicySigner(newSigner);
+
+        address previousSigner = p.signer;
+        p.signer = newSigner;
+
+        emit PolicySignerRotated(previousSigner, newSigner);
+    }
+
+    /**
+     * @notice Revoke the policy (disable Agent access)
+     * @dev Only callable by NFT owner. Sets active=false.
+     */
+    function revokePolicy() external onlyTokenOwner {
+        Policy storage p = policy;
+        if (p.budgetToken == address(0)) revert PolicyNotConfigured();
+        p.active = false;
+        emit PolicyRevoked();
+    }
+
+    // ============ Policy View Functions ============
+
+    /**
+     * @notice Get count of whitelisted targets
+     * @return Number of targets in the whitelist
+     */
+    function policyTargetCount() external view returns (uint256) {
+        return _policyTargets.length;
+    }
+
+    /**
+     * @notice Get all whitelisted target addresses
+     * @return targets    Array of whitelisted addresses
+     */
+    function getPolicyTargets() external view returns (address[] memory targets) {
+        uint256 len = _policyTargets.length;
+        targets = new address[](len);
         for (uint256 i = 0; i < len; ++i) {
-            bytes32 sid = _sessionIndex[i];
-            Session storage s = sessions[sid];
-            if (s.budgetToken == address(0)) continue;
-            if (s.revoked) continue;
-            if (block.timestamp > s.validUntil) continue;
-
-            if (skipped < offset) {
-                unchecked {
-                    ++skipped;
-                }
-                continue;
-            }
-
-            ids[out] = sid;
-            unchecked {
-                ++out;
-            }
-            if (out == limit) break;
-        }
-
-        assembly ("memory-safe") {
-            mstore(ids, out)
+            targets[i] = _policyTargets[i];
         }
     }
 
-    /// @notice agent 自激活 session，把自己地址绑定为 signer(msg.sender)
-    /// @dev 这样 owner 无需直接管理 session key，只管理策略模板即可，实现agent接管。
-    function activateSession(bytes32 sessionId) external {
-        Session storage s = sessions[sessionId];
-        if (s.budgetToken == address(0)) revert SessionNotFound(sessionId);
-        if (s.revoked) revert SessionIsRevoked(sessionId);
-        if (block.timestamp > s.validUntil) revert SessionExpired(sessionId);
-        if (s.signer != address(0)) revert SessionAlreadyActivated(sessionId);
-        s.signer = msg.sender;
-        emit SessionActivated(sessionId, msg.sender);
-    }
+    // ============ Execution (Owner) ============
 
-    /// @notice 通过 session key 的 EIP-712 签名激活 session，允许由任意 relayer/AA 代发。
-    /// @dev 这样激活交易 gas 可由 paymaster 赞助，同时保持 signer 仍是 session key 对应地址。
-    function activateSessionBySig(bytes32 sessionId, address signer, uint256 deadline, bytes calldata signature)
-        external
-    {
-        Session storage s = sessions[sessionId];
-        if (s.budgetToken == address(0)) revert SessionNotFound(sessionId);
-        if (s.revoked) revert SessionIsRevoked(sessionId);
-        if (block.timestamp > s.validUntil) revert SessionExpired(sessionId);
-        if (s.signer != address(0)) revert SessionAlreadyActivated(sessionId);
-        if (block.timestamp > deadline) revert SignatureExpired(deadline);
-        if (signer == address(0)) revert InvalidSigner(signer);
-
-        bytes32 digest =
-            _hashTypedDataV4(keccak256(abi.encode(SESSION_ACTIVATION_TYPEHASH, sessionId, signer, deadline)));
-        address recovered = ECDSA.recover(digest, signature);
-        if (recovered != signer) revert InvalidSigner(recovered);
-
-        s.signer = signer;
-        emit SessionActivated(sessionId, signer);
-    }
-
-    /// @notice owner 随时撤销 session
-    function revokeSession(bytes32 sessionId) external onlyTokenOwner {
-        Session storage s = sessions[sessionId];
-        if (s.budgetToken == address(0)) revert SessionNotFound(sessionId);
-        s.revoked = true;
-        emit SessionRevoked(sessionId);
-    }
-
-    /// @notice owner 直控执行入口，作为人工干预手段，优先级高于 session 执行路径。
-    /// @dev 当前仅允许 operation=0（CALL），不开放 delegatecall/create。
+    /**
+     * @notice Execute a call directly as the NFT owner
+     * @dev Only callable by NFT owner. Full control, no restrictions.
+     * @param to           Target contract address
+     * @param value        ETH value to send
+     * @param data         Calldata to execute
+     * @param operation    Operation type (only CALL=0 supported)
+     * @return result      Return data from the call
+     */
     function execute(address to, uint256 value, bytes calldata data, uint8 operation)
         external
         payable
@@ -287,46 +387,58 @@ contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executa
         return ret;
     }
 
-    /// @notice session key 执行入口
-    /// @dev 执行顺序：
-    /// 1) 检查 session 状态（存在/激活/未撤销/未过期）
-    /// 2) 检查 deadline、白名单、nonce
-    /// 3) EIP-712 验签
-    /// 4) 可选owner -> TBA（pullAmount）
-    /// 5) 调用目标合约
-    /// 6) 依据 owner 余额变化记账并校验预算上限
-    function executeWithSession(SessionCallRequest calldata req, bytes calldata signature)
+    // ============ Execution (Agent via Policy) ============
+
+    /**
+     * @notice Execute a call as an authorized Agent via Policy
+     * @dev Callable by anyone with valid signature from policy.signer
+     *      Subject to policy restrictions:
+     *      - Policy must be configured and active
+     *      - Current time must be before validUntil
+     *      - Target must be in whitelist
+     *      - Total spending must not exceed maxTotal
+     *      - Signature must be valid and not expired
+     *
+     * @param req          Execution request parameters
+     * @param signature    EIP-712 signature from policy.signer
+     * @return result      Return data from the call
+     */
+    function executeWithPolicy(PolicyCallRequest calldata req, bytes calldata signature)
         external
         payable
         nonReentrant
         returns (bytes memory result)
     {
-        Session storage s = sessions[req.sessionId];
-        if (s.budgetToken == address(0)) revert SessionNotFound(req.sessionId);
-        if (s.signer == address(0)) revert SessionNotActivated(req.sessionId);
-        if (s.revoked) revert SessionIsRevoked(req.sessionId);
-        if (block.timestamp > s.validUntil) revert SessionExpired(req.sessionId);
-        if (block.timestamp > req.deadline) revert SignatureExpired(req.deadline);
-        if (!sessionTargetAllowed[req.sessionId][req.to]) revert TargetNotAllowed(req.sessionId, req.to);
-        if (usedSessionNonce[req.sessionId][req.nonce]) revert NonceAlreadyUsed(req.sessionId, req.nonce);
+        Policy storage p = policy;
 
-        // 签名覆盖 to/value/dataHash/nonce/deadline/pullAmount，防止请求内容被篡改。
-        bytes32 structHash = _sessionCallStructHash(
-            req.sessionId, req.to, req.value, keccak256(req.data), req.nonce, req.deadline, req.pullAmount
-        );
+        // === Policy State Checks ===
+        if (p.budgetToken == address(0)) revert PolicyNotConfigured();
+        if (!p.active) revert PolicyNotActive();
+        if (block.timestamp > p.validUntil) revert PolicyExpired(p.validUntil);
+
+        // === Request Validity Checks ===
+        if (block.timestamp > req.deadline) revert SignatureExpired(req.deadline);
+        if (!policyTargetAllowed[req.to]) revert TargetNotAllowed(req.to);
+        if (usedPolicyNonce[req.nonce]) revert NonceAlreadyUsed(req.nonce);
+
+        // === Signature Verification ===
+        bytes32 structHash =
+            _policyCallStructHash(req.to, req.value, keccak256(req.data), req.nonce, req.deadline, req.pullAmount);
         bytes32 digest = _hashTypedDataV4(structHash);
         address recovered = ECDSA.recover(digest, signature);
-        if (recovered != s.signer) revert InvalidSigner(recovered);
+        if (recovered != p.signer) revert InvalidSigner(recovered);
 
-        usedSessionNonce[req.sessionId][req.nonce] = true;
+        // === Mark Nonce Used ===
+        usedPolicyNonce[req.nonce] = true;
 
+        // === Pull Tokens from Owner (if needed) ===
         address accountOwner = owner();
-        uint256 beforeBal = IERC20(s.budgetToken).balanceOf(accountOwner);
+        uint256 beforeBal = IERC20(p.budgetToken).balanceOf(accountOwner);
         if (req.pullAmount > 0) {
-            // 关键：消费资金来自 owner，TBA 只作为执行中转账户。
-            IERC20(s.budgetToken).safeTransferFrom(accountOwner, address(this), req.pullAmount);
+            IERC20(p.budgetToken).safeTransferFrom(accountOwner, address(this), req.pullAmount);
         }
 
+        // === Execute Call ===
         unchecked {
             ++state;
         }
@@ -338,21 +450,25 @@ contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executa
             }
         }
 
-        // 预算采用 owner 余额前后差值，确保和owner出资语义一致。
-        uint256 afterBal = IERC20(s.budgetToken).balanceOf(accountOwner);
+        // === Budget Tracking ===
+        uint256 afterBal = IERC20(p.budgetToken).balanceOf(accountOwner);
         uint256 spend = beforeBal > afterBal ? beforeBal - afterBal : 0;
-        //如果超预算就revert，避免先执行后发现超预算的尴尬情况。
-        uint256 totalSpent = s.spent + spend;
-        if (totalSpent > s.maxTotal) revert BudgetExceeded(req.sessionId, totalSpent, s.maxTotal);
-        s.spent = totalSpent;
+        uint256 totalSpent = p.spent + spend;
+        if (totalSpent > p.maxTotal) revert BudgetExceeded(totalSpent, p.maxTotal);
+        p.spent = totalSpent;
 
-        emit SessionExecuted(req.sessionId, req.nonce, spend, totalSpent);
+        emit PolicyExecuted(req.nonce, spend, totalSpent);
         return ret;
     }
 
-    /// @inheritdoc IERC6551Account
-    /// @dev 从账户运行时代码尾部读取 (chainId, tokenContract, tokenId)。
-    ///ERC-6551 reference。
+    // ============ ERC-6551 Account Interface ============
+
+    /**
+     * @notice Get the bound NFT information
+     * @return chainId        Chain ID where NFT exists
+     * @return tokenContract  NFT contract address
+     * @return tokenId        NFT token ID
+     */
     function token() public view returns (uint256, address, uint256) {
         bytes memory footer = new bytes(0x60);
         assembly {
@@ -361,45 +477,99 @@ contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executa
         return abi.decode(footer, (uint256, address, uint256));
     }
 
-    /// @notice TBA 的 owner 由绑定 NFT 的 ownerOf(tokenId) 动态决定。
-    /// @dev NFT 转移后，TBA 控制权会自动跟着转移。
+    /**
+     * @notice Get the current owner of this TBA
+     * @dev Returns the owner of the bound NFT
+     * @return NFT owner address, or zero if wrong chain
+     */
     function owner() public view returns (address) {
         (uint256 chainId, address tokenContract, uint256 tokenId) = token();
         if (chainId != block.chainid) return address(0);
         return IERC721OwnerOf(tokenContract).ownerOf(tokenId);
     }
 
-    /// @inheritdoc IERC6551Account
+    /**
+     * @notice Check if an address is a valid signer
+     * @param signer      Address to check
+     * @return magicValue IERC6551Account.isValidSigner selector if valid
+     */
     function isValidSigner(address signer, bytes calldata) external view returns (bytes4 magicValue) {
         if (_isValidSigner(signer)) return IERC6551Account.isValidSigner.selector;
         return bytes4(0);
     }
 
-    /// @inheritdoc IERC1271
+    /**
+     * @notice Validate an ERC-1271 signature
+     * @param hash        Message hash
+     * @param signature   Signature bytes
+     * @return magicValue IERC1271.isValidSignature selector if valid
+     */
     function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4 magicValue) {
         bool ok = SignatureChecker.isValidSignatureNow(owner(), hash, signature);
         if (ok) return IERC1271.isValidSignature.selector;
         return bytes4(0);
     }
 
-    /// @notice 声明接口支持：IERC165 / IERC6551Account / IERC6551Executable
+    /**
+     * @notice Check interface support
+     * @param interfaceId    Interface identifier
+     * @return Whether interface is supported
+     */
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == type(IERC165).interfaceId || interfaceId == type(IERC6551Account).interfaceId
             || interfaceId == type(IERC6551Executable).interfaceId;
     }
 
+    // ============ Internal Functions ============
+
+    /**
+     * @dev Check if signer is the NFT owner
+     */
     function _isValidSigner(address signer) internal view returns (bool) {
         return signer == owner();
     }
 
+    /**
+     * @dev Revert if caller is not NFT owner
+     */
     function _onlyTokenOwner() internal view {
         if (msg.sender != owner()) revert NotTokenOwner(msg.sender);
     }
 
-    /// @dev 组装 SessionCall 的 structHash（等价于 keccak256(abi.encode(...))）。
-    /// 使用 assembly 是为了减少 gas 和避免多余内存分配。
-    function _sessionCallStructHash(
-        bytes32 sessionId,
+    /**
+     * @dev Replace all policy targets with new list
+     * @param targets    New target addresses to whitelist
+     */
+    function _replacePolicyTargets(address[] calldata targets) internal {
+        if (targets.length == 0) revert InvalidPolicyTargets();
+
+        // Clear old targets
+        uint256 oldLen = _policyTargets.length;
+        for (uint256 i = 0; i < oldLen; ++i) {
+            address oldTarget = _policyTargets[i];
+            policyTargetAllowed[oldTarget] = false;
+            _policyTargetIndexed[oldTarget] = false;
+        }
+        delete _policyTargets;
+
+        // Add new targets
+        uint256 len = targets.length;
+        for (uint256 i = 0; i < len; ++i) {
+            address target = targets[i];
+            if (target == address(0)) revert InvalidPolicyTarget(target);
+            if (_policyTargetIndexed[target]) continue;
+            _policyTargetIndexed[target] = true;
+            policyTargetAllowed[target] = true;
+            _policyTargets.push(target);
+        }
+
+        if (_policyTargets.length == 0) revert InvalidPolicyTargets();
+    }
+
+    /**
+     * @dev Compute EIP-712 struct hash for PolicyCall
+     */
+    function _policyCallStructHash(
         address to,
         uint256 value,
         bytes32 dataHash,
@@ -407,19 +577,17 @@ contract Agent6551Account is IERC165, IERC1271, IERC6551Account, IERC6551Executa
         uint256 deadline,
         uint256 pullAmount
     ) internal pure returns (bytes32 result) {
-        bytes32 typeHash = SESSION_CALL_TYPEHASH;
-        //等价于 keccak256(abi.encode(typeHash, sessionId, to, value, dataHash, nonce, deadline, pullAmount))
+        bytes32 typeHash = POLICY_CALL_TYPEHASH;
         assembly ("memory-safe") {
             let ptr := mload(0x40)
             mstore(ptr, typeHash)
-            mstore(add(ptr, 0x20), sessionId)
-            mstore(add(ptr, 0x40), and(to, 0xffffffffffffffffffffffffffffffffffffffff))
-            mstore(add(ptr, 0x60), value)
-            mstore(add(ptr, 0x80), dataHash)
-            mstore(add(ptr, 0xa0), nonce)
-            mstore(add(ptr, 0xc0), deadline)
-            mstore(add(ptr, 0xe0), pullAmount)
-            result := keccak256(ptr, 0x100)
+            mstore(add(ptr, 0x20), and(to, 0xffffffffffffffffffffffffffffffffffffffff))
+            mstore(add(ptr, 0x40), value)
+            mstore(add(ptr, 0x60), dataHash)
+            mstore(add(ptr, 0x80), nonce)
+            mstore(add(ptr, 0xa0), deadline)
+            mstore(add(ptr, 0xc0), pullAmount)
+            result := keccak256(ptr, 0xe0)
         }
     }
 }

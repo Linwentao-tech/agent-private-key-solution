@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# ABA config and secrets
+.aba/config.json
+.aba/secrets.json
+
+# Environment files
+.env
+.env.local

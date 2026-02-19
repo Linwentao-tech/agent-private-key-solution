@@ -1,0 +1,48 @@
+{
+  "name": "aba-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ABA command line client",
+  "type": "module",
+  "bin": {
+    "aba": "./bin/run.js"
+  },
+  "files": [
+    "/bin",
+    "/dist",
+    "/oclif.manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist oclif.manifest.json",
+    "dev": "node ./bin/dev.js",
+    "owner:api": "npm run build && node ./dist/backend/owner-api/main.js",
+    "lint": "echo 'no lint configured'",
+    "prepack": "npm run clean && npm run build && oclif manifest",
+    "postpack": "npm run clean"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.8.4",
+    "@oclif/core": "^4.5.7",
+    "express": "^4.22.1",
+    "viem": "^2.45.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.0",
+    "oclif": "^4.22.1",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "overrides": {
+    "fast-xml-parser": "^5.0.0"
+  },
+  "oclif": {
+    "bin": "aba",
+    "dirname": "aba",
+    "commands": "./dist/agentCommands",
+    "topicSeparator": " "
+  }
+}

@@ -42,11 +42,10 @@ contract Minimal4337Account {
         if (!ok) revert CallFailed(data);
     }
 
-    function validateUserOp(
-        PackedUserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 missingAccountFunds
-    ) external returns (uint256 validationData) {
+    function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
+        external
+        returns (uint256 validationData)
+    {
         if (msg.sender != entryPoint) {
             revert NotAuthorized(msg.sender);
         }

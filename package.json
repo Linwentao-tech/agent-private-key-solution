@@ -1,22 +1,48 @@
 {
-  "name": "agentboundaccount",
-  "version": "1.0.0",
-  "description": "usdt 0x7169D38820dfd117C3FA1f22a697dBA58d90BA06",
-  "main": "index.js",
-  "directories": {
-    "lib": "lib",
-    "test": "test"
+  "name": "aba-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ABA command line client",
+  "type": "module",
+  "bin": {
+    "aba": "./bin/run.js"
   },
+  "files": [
+    "/bin",
+    "/dist",
+    "/oclif.manifest.json"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist oclif.manifest.json",
+    "dev": "node ./bin/dev.js",
+    "owner:api": "npm run build && node ./dist/backend/owner-api/main.js",
+    "lint": "echo 'no lint configured'",
+    "prepack": "npm run clean && npm run build && oclif manifest",
+    "postpack": "npm run clean"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "ethers": "^6.16.0",
-    "permissionless": "^0.3.4",
-    "viem": "^2.45.1"
+    "@inquirer/prompts": "^7.8.4",
+    "@oclif/core": "^4.5.7",
+    "express": "^4.22.1",
+    "viem": "^2.45.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.0",
+    "oclif": "^4.22.1",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "overrides": {
+    "fast-xml-parser": "^5.0.0"
+  },
+  "oclif": {
+    "bin": "aba",
+    "dirname": "aba",
+    "commands": "./dist/agentCommands",
+    "topicSeparator": " "
   }
 }

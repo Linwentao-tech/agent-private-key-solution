@@ -1,17 +1,30 @@
-# Compiler files
-cache/
-out/
-
-# Ignores development broadcast logs
-!/broadcast
-/broadcast/*/31337/
-/broadcast/**/dry-run/
-
-# Docs
-docs/
-
-# Dotenv file
-.env
-
-# Node modules
+# Dependencies
 node_modules/
+
+# Build output
+dist/
+
+# Foundry
+contracts/cache/
+contracts/out/
+
+# Broadcast logs (keep non-dry-run)
+!contracts/broadcast/
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+
+# ABA config and secrets
+.aba/config.json
+.aba/secrets.json
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

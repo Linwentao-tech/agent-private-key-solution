@@ -177,7 +177,7 @@ export function parseCliError(err: unknown): ParsedCliError {
     }
   }
 
-  if (matchAny(raw, [/PolicyNotActive/i, /(?:0x)?8966b51f/i])) {
+  if (matchAny(raw, [/PolicyNotActive/i, /policy is inactive/i, /(?:0x)?8966b51f/i])) {
     return {
       code: 'POLICY_NOT_ACTIVE',
       message: 'policy 当前处于禁用状态。',
@@ -204,7 +204,7 @@ export function parseCliError(err: unknown): ParsedCliError {
     }
   }
 
-  if (matchAny(raw, [/TargetNotAllowed/i, /(?:0x)?e356c1d3/i])) {
+  if (matchAny(raw, [/TargetNotAllowed/i, /is not in policy whitelist/i, /token target not allowed by policy/i, /(?:0x)?e356c1d3/i])) {
     return {
       code: 'TARGET_NOT_ALLOWED',
       message: '目标地址不在 policy 白名单中。',
@@ -213,7 +213,7 @@ export function parseCliError(err: unknown): ParsedCliError {
     }
   }
 
-  if (matchAny(raw, [/BudgetExceeded/i, /(?:0x)?29a8b5f0/i, /insufficient allowance/i, /transfer amount exceeds/i])) {
+  if (matchAny(raw, [/BudgetExceeded/i, /budget exceeded/i, /(?:0x)?29a8b5f0/i, /insufficient allowance/i, /owner allowance is insufficient for pullamount/i, /owner token balance is insufficient for pullamount/i, /transfer amount exceeds/i])) {
     return {
       code: 'BUDGET_OR_ALLOWANCE',
       message: '预算或代币授权不足，执行被拒绝。',

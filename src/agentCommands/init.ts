@@ -110,6 +110,8 @@ function loadMinimal4337Bytecode(): Hex {
   const relCandidates = [
     ['out', 'src', 'mocks', 'Minimal4337Account.sol', 'Minimal4337Account.json'],
     ['out', 'Minimal4337Account.sol', 'Minimal4337Account.json'],
+    ['contracts', 'out', 'src', 'mocks', 'Minimal4337Account.sol', 'Minimal4337Account.json'],
+    ['contracts', 'out', 'Minimal4337Account.sol', 'Minimal4337Account.json'],
   ]
   const candidates = [
     ...relCandidates.map((rel) => join(process.cwd(), ...rel)),

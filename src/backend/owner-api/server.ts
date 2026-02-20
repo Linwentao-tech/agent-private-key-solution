@@ -24,9 +24,8 @@ const OWNER_ROUTES = [
   'GET /health',
   'GET /owner/capabilities',
   'POST /owner/create-policy',
-  'POST /owner/policy-update',
+  'POST /owner/adjust-policy',
   'POST /owner/approve',
-  'POST /owner/call',
 ] as const
 
 function bigIntReplacer(_key: string, value: unknown): unknown {

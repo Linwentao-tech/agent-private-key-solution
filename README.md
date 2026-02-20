@@ -1,92 +1,93 @@
 # ABA CLI
 
-Agent Bound Account CLI - 基于 ERC-6551 的智能钱包命令行工具，支持 Agent 授权执行。
+Agent Bound Account CLI - an ERC-6551 smart wallet command-line tool with Agent-authorized execution.
 
-> **注意：目前仅支持 Sepolia 测试网 (chainId: 11155111)**
+> **Note: Sepolia testnet only for now (chainId: 11155111)**
 
 ---
 
-## 目录
+## Table of Contents
 
-- [架构流程图](#架构流程图)
-- [快速开始](#快速开始)
-- [环境配置](#环境配置)
-- [Agent CLI 命令](#agent-cli-命令)
+- [Architecture Flow](#architecture-flow)
+- [Quick Start](#quick-start)
+- [Environment Setup](#environment-setup)
+- [Agent CLI Commands](#agent-cli-commands)
 - [Owner API](#owner-api)
-- [错误码](#错误码)
-- [注意事项](#注意事项)
+- [Error Codes](#error-codes)
+- [Notes](#notes)
 
 ---
 
-## 架构流程图
+## Architecture Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              ABA 架构流程                                        │
+│                              ABA Architecture Flow                              │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
    AGENT                                           OWNER
-     │                                               │
+     │                                              │
      │  ┌────────────────────────────────┐          │
-     │  │ ① aba init                     │          │
+     │  │ 1) aba init                    │          │
      │  │    --nft-ca <NFT>              │          │
      │  │    (--token-id <ID>            │          │
-     │  │    或 --owner-address <ADDR>)  │          │
+     │  │    or --owner-address <ADDR>)  │          │
      │  │                                │          │
-     │  │ 生成密钥、部署AA、绑定NFT        │          │
-     │  │ 输出: agentSignerAddress       │           │
+     │  │ Generate keys, deploy AA,      │          │
+     │  │ bind NFT, output               │          │
+     │  │ agentSignerAddress             │          │
      │  └───────────────┬────────────────┘          │
      │                  │                           │
      │                  ▼                           │
-     │  ─────────────────────────────────────────►  │  ┌─────────────────────────────┐
-     │                告诉 Owner                     │ │ ② 启动 Owner API             │
-     │                                               │ │    npm run owner:api        │
-     │                                               │ └───────────────┬─────────────┘
-     │                                               │                 │
-     │                                               │                 ▼
-     │                                               │  ┌─────────────────────────────┐
-     │                                               │  │ ③ POST /create-policy       │
-     │                                               │  │    绑定 Agent 到 TBA        │
-     │                                               │  │    设置预算和白名单          │
-     │                                               │  └───────────────┬─────────────┘
-     │                                               │                  │
-     │                                               │                  ▼
-     │                                               │  ┌─────────────────────────────┐
-     │                                               │  │ ④ POST /approve             │
-     │                                               │  │    授权 USDT 给 TBA          │
-     │                                               │  └───────────────┬─────────────┘
-     │                                               │                  │
+     │  ─────────────────────────────────────────►  │ ┌─────────────────────────────┐
+     │            Send info to Owner                │ │ 2) Start Owner API          │
+     │                                              │ │    npm run owner:api        │
+     │                                              │ └───────────────┬─────────────┘
+     │                                              │                 │
+     │                                              │                 ▼
+     │                                              │  ┌─────────────────────────────┐
+     │                                              │  │ 3) POST /create-policy      │
+     │                                              │  │    Bind Agent to TBA        │
+     │                                              │  │    Set budget and whitelist │
+     │                                              │  └───────────────┬─────────────┘
+     │                                              │                  │
+     │                                              │                  ▼
+     │                                              │  ┌─────────────────────────────┐
+     │                                              │  │ 4) POST /approve            │
+     │                                              │  │    Approve USDT for TBA     │
+     │                                              │  └───────────────┬─────────────┘
+     │                                              │                  │
      │  ┌────────────────────────────────┐          │                  │
-     │  │ ⑤ aba send / aba call          │◄─────────┼──────────────────┘
+     │  │ 5) aba send / aba call         │◄─────────┼──────────────────┘
      │  │    --to <address>              │          │
      │  │    --data <hex>                │          │
      │  │    --pull-amount <units>       │          │
      │  │                                │          │
-     │  │ 执行转账/合约调用               │          │
-     │  │ AA Paymaster 付 gas            │          │
+     │  │ Execute transfer/contract call │          │
+     │  │ AA Paymaster covers gas        │          │
      │  └───────────────┬────────────────┘          │
      │                  │                           │
      │                  ▼                           │
      │  ┌────────────────────────────────┐          │  ┌─────────────────────────────┐
-     │  │ ⑥ aba status/balance/policy    │          │  │ ⑦ POST /adjust-policy       │
-     │  │    查询状态                     │          │  │    调整预算/更换 Agent (可选)│
+     │  │ 6) aba status/balance/policy   │          │  │ 7) POST /adjust-policy      │
+     │  │    Query runtime state         │          │  │    Update budget/signer     │
      │  └────────────────────────────────┘          │  └─────────────────────────────┘
      │                                               │
      ▼                                               ▼
    ┌────────────────────────────────────────────────────────────────────────────┐
-   │                              TBA (Agent6551Account)                         │
-   │                                                                             │
-   │   Policy: { signer, validUntil, maxTotal, spent, budgetToken, active,     │
+   │                              TBA (Agent6551Account)                        │
+   │                                                                            │
+   │   Policy: { signer, validUntil, maxTotal, spent, budgetToken, active,      │
    │             targets[] }                                                    │
-   │                                                                             │
+   │                                                                            │
    └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 安装与构建
+### 1. Install and Build
 
 ```bash
 cd cli
@@ -94,124 +95,124 @@ npm install
 npm run build
 ```
 
-### 2. 核心流程
+### 2. Core Flow
 
 ```
 1. Agent: aba init --nft-ca <NFT> (--token-id <ID> | --owner-address <ADDR>)
-   → 生成密钥、部署 AA、绑定 NFT、部署 TBA
+   -> Generate keys, deploy AA, bind NFT, deploy TBA
 
-2. User:  启动 Owner API
+2. User:  Start Owner API
    npm run owner:api -- --listen localhost:3000 --owner-privatekey <PK>
 
 3. User:  POST /create-policy
-   → 配置 Policy (signer = agentSignerAddress)
+   -> Configure policy (signer = agentSignerAddress)
 
 4. User:  POST /approve
-   → 授权代币给 TBA
+   -> Approve token allowance for TBA
 
 5. Agent: aba send <amount> <recipient>
-   → 执行转账
+   -> Execute transfer
 
-   或: aba call --to <address> --data <hex> --pull-amount <units>
-   → 执行合约调用
+   Or: aba call --to <address> --data <hex> --pull-amount <units>
+   -> Execute contract call
 
 6. Agent: aba status/balance/policy/logs/doctor
-   → 查看状态
+   -> Inspect runtime state
 
 7. User:  POST /adjust-policy
-   → 调整 Policy (可选)
+   -> Adjust policy (optional)
 ```
 
-### 3. 命令速查
+### 3. Command Quick Reference
 
-**AGENT 命令:**
+**AGENT commands:**
 
-| 命令 | 说明 |
+| Command | Description |
 |------|------|
-| `aba init` | 初始化：生成密钥、部署 AA、绑定 NFT |
-| `aba send` | 发送代币：转账 USDT |
-| `aba call` | 合约调用：执行任意合约调用 |
-| `aba status` | 查看状态 |
-| `aba balance` | 查看余额 |
-| `aba policy` | 查看 Policy |
-| `aba logs` | 查看日志 |
-| `aba doctor` | 诊断环境 |
+| `aba init` | Initialize runtime: generate keys, deploy AA, bind NFT |
+| `aba send` | Send token: transfer USDT |
+| `aba call` | Contract call: execute arbitrary calldata |
+| `aba status` | Show runtime status |
+| `aba balance` | Show balances |
+| `aba policy` | Show policy |
+| `aba logs` | Show execution logs |
+| `aba doctor` | Diagnose environment |
 
-**OWNER API 端点:**
+**OWNER API endpoints:**
 
-| 端点 | 说明 |
+| Endpoint | Description |
 |------|------|
-| `POST /create-policy` | 创建 Policy |
-| `POST /adjust-policy` | 调整 Policy |
-| `POST /approve` | 授权代币 |
+| `POST /create-policy` | Create policy |
+| `POST /adjust-policy` | Adjust policy |
+| `POST /approve` | Approve token allowance |
 
 ---
 
-## 环境配置
+## Environment Setup
 
-### .env 文件
+### `.env` file
 
-在 `cli/` 目录下创建 `.env` 文件：
+Create a `.env` file under `cli/`:
 
 ```bash
-# Owner 私钥 (用于 Owner API 签名交易)
-PRIVATE_KEY=0x你的私钥
+# Owner private key (used by Owner API to sign transactions)
+PRIVATE_KEY=0xyour_private_key
 
 # Sepolia RPC URL
-RPC_URL=https://eth-sepolia.g.alchemy.com/v2/你的API_KEY
+RPC_URL=https://eth-sepolia.g.alchemy.com/v2/your_api_key
 
 # Pimlico Bundler RPC URL (AA 4337)
-PIMLICO_RPC_URL=https://api.pimlico.io/v2/11155111/rpc?apikey=你的PIMLICO_KEY
+PIMLICO_RPC_URL=https://api.pimlico.io/v2/11155111/rpc?apikey=your_pimlico_key
 ```
 
-### 获取配置
+### How to obtain values
 
-| 配置项 | 获取方式 |
+| Config | Source |
 |--------|---------|
-| `PRIVATE_KEY` | 从钱包导出私钥 |
-| `RPC_URL` | [Alchemy](https://alchemy.com) 或 [Infura](https://infura.io) |
-| `PIMLICO_RPC_URL` | [Pimlico](https://pimlico.io) 注册获取 API Key |
+| `PRIVATE_KEY` | Export from your wallet |
+| `RPC_URL` | [Alchemy](https://alchemy.com) or [Infura](https://infura.io) |
+| `PIMLICO_RPC_URL` | Register at [Pimlico](https://pimlico.io) and get an API key |
 
-### 状态文件
+### State files
 
-默认保存在 `./.aba/` 目录：
+Stored by default in `./.aba/`:
 
-| 文件 | 内容 | Git |
+| File | Content | Git |
 |------|------|-----|
-| `config.json` | 配置：地址、chainId、binding、RPC URLs (含 API keys) | 忽略 |
-| `secrets.json` | 私钥：agentSignerPrivateKey, aaOwnerPrivateKey | 忽略 |
+| `config.json` | Addresses, chainId, binding, RPC URLs (includes API keys) | Ignored |
+| `secrets.json` | Private keys: `agentSignerPrivateKey`, `aaOwnerPrivateKey` | Ignored |
 
-> **安全说明：** 两个文件都已自动加入 `.gitignore`，切勿提交到版本控制。`config.json` 包含 RPC URLs 和 API keys，`secrets.json` 包含私钥。
+> **Security note:** Both files are already in `.gitignore`. Never commit them. `config.json` contains RPC URLs and API keys, and `secrets.json` contains private keys.
 
 ---
 
-## Agent CLI 命令
+## Agent CLI Commands
 
-### aba init
+### `aba init`
 
-初始化 ABA 运行时环境，生成密钥、部署 AA 账户，并绑定 NFT 到 TBA。
+Initialize ABA runtime, generate keys, deploy the AA account, and bind NFT to TBA.
 
 ```bash
 node ./bin/run.js init --rpc-url <RPC_URL> --aa-bundler-rpc-url <BUNDLER_URL> --nft-ca <NFT_ADDRESS> (--token-id <ID> | --owner-address <ADDR>) [options]
 ```
 
-| 参数 | 必填 | 说明 |
+| Parameter | Required | Description |
 |------|------|------|
-| `--rpc-url` | ✅ | RPC URL |
-| `--aa-bundler-rpc-url` | ✅ | AA Bundler RPC URL |
-| `--nft-ca` | ✅ | NFT 合约地址 |
-| `--token-id` | ⚠️ | Token ID（与 `--owner-address` 二选一） |
-| `--owner-address` | ⚠️ | Owner 地址，自动发现 tokenId（与 `--token-id` 二选一） |
-| `--registry` | | ERC-6551 Registry 地址 |
-| `--implementation` | | Agent6551 实现地址 |
-| `--aa-account` | | AA 账户地址 (不提供则自动部署) |
-| `--json` | | JSON 输出 |
+| `--rpc-url` | Yes | RPC URL |
+| `--aa-bundler-rpc-url` | Yes | AA Bundler RPC URL |
+| `--nft-ca` | Yes | NFT contract address |
+| `--token-id` | Either | Token ID (use this or `--owner-address`) |
+| `--owner-address` | Either | Owner address, auto-discovers tokenId (use this or `--token-id`) |
+| `--registry` | No | ERC-6551 Registry address |
+| `--implementation` | No | Agent6551 implementation address |
+| `--aa-account` | No | AA account address (auto-deployed if omitted) |
+| `--json` | No | JSON output |
 
-> ⚠️ `--token-id` 和 `--owner-address` 必须提供其中之一。如果只提供 `--owner-address`，会自动发现该地址拥有的 tokenId。
+> `--token-id` or `--owner-address` must be provided. If only `--owner-address` is provided, tokenId is discovered automatically.
 
-**示例:**
+**Examples:**
 ```bash
-# 指定 tokenId
+# Specify tokenId directly
 node ./bin/run.js init \
   --rpc-url https://eth-sepolia.g.alchemy.com/v2/xxx \
   --aa-bundler-rpc-url https://api.pimlico.io/v2/11155111/rpc?apikey=xxx \
@@ -219,7 +220,7 @@ node ./bin/run.js init \
   --token-id 443 \
   --json
 
-# 指定 owner 地址，自动发现 tokenId
+# Specify owner address and auto-discover tokenId
 node ./bin/run.js init \
   --rpc-url <RPC> \
   --aa-bundler-rpc-url <BUNDLER> \
@@ -230,105 +231,105 @@ node ./bin/run.js init \
 
 ---
 
-### aba send
+### `aba send`
 
-发送代币 (核心操作)。
+Send token (core operation).
 
 ```bash
 node ./bin/run.js send <amount> <recipient> [options]
 ```
 
-| 参数 | 必填 | 说明 |
+| Parameter | Required | Description |
 |------|------|------|
-| `amount` | ✅ | 金额: `1`, `0.50`, `'$5.00'` |
-| `recipient` | ✅ | 地址或 ENS 名称 |
-| `--token` | | 代币地址 (默认: USDT) |
-| `--dry-run` | | 模拟执行，不广播 |
-| `--json` | | JSON 输出 |
+| `amount` | Yes | Amount: `1`, `0.50`, `'$5.00'` |
+| `recipient` | Yes | Address or ENS name |
+| `--token` | No | Token address (default: USDT) |
+| `--dry-run` | No | Simulate only, do not broadcast |
+| `--json` | No | JSON output |
 
-**示例:**
+**Examples:**
 ```bash
-# 发送 1 USDT
+# Send 1 USDT
 node ./bin/run.js send 1 0x1234...abcd --json
 
-# 模拟执行
+# Simulation only
 node ./bin/run.js send 1 0x1234...abcd --dry-run --json
 ```
 
 ---
 
-### aba call
+### `aba call`
 
-执行任意合约调用 (核心操作)。支持自动 approve 和预算检查。
+Execute any contract call (core operation). Supports automatic `approve` and budget checks.
 
 ```bash
 node ./bin/run.js call --to <address> --data <hex> [options]
 ```
 
-| 参数 | 必填 | 说明 |
+| Parameter | Required | Description |
 |------|------|------|
-| `--to` | ✅ | 目标合约地址 |
-| `--data` | ✅ | 调用数据 (hex 字符串) |
-| `--pull-amount` | | 从 Owner 拉取代币数量 (token units) |
-| `--value` | | ETH 数量 (wei) |
-| `--dry-run` | | 模拟执行，不广播 |
-| `--json` | | JSON 输出 |
+| `--to` | Yes | Target contract address |
+| `--data` | Yes | Calldata (hex string) |
+| `--pull-amount` | No | Token amount pulled from Owner (token units) |
+| `--value` | No | ETH value (wei) |
+| `--dry-run` | No | Simulate only, do not broadcast |
+| `--json` | No | JSON output |
 
-**自动 Approve 机制:**
+**Automatic approve flow:**
 
-当指定 `--pull-amount` 时，CLI 会自动：
-1. **预算检查**: 验证 `pullAmount <= maxTotal - spent`
-2. **Allowance 检查**: 读取 TBA 对目标合约的授权额度
-3. **自动调整**: 如果授权额度 ≠ pullAmount，自动调整为 pullAmount
-4. **执行调用**: 完成目标合约调用
+When `--pull-amount` is specified, CLI will automatically:
+1. **Budget check:** validate `pullAmount <= maxTotal - spent`
+2. **Allowance check:** read TBA allowance to target contract
+3. **Auto-adjust:** if allowance does not equal `pullAmount`, adjust it to `pullAmount`
+4. **Execute call:** run the target contract call
 
-这确保 approve 金额 = 实际花费金额，防止过度授权。
+This keeps approved amount equal to actual spend and avoids over-approval.
 
-**示例:**
+**Examples:**
 ```bash
-# 购买商品 (自动 approve + pull + call)
+# Purchase flow (auto approve + pull + call)
 node ./bin/run.js call \
   --to 0xShop \
   --data 0xd6febde8... \
   --pull-amount 1000000 \
   --json
 
-# 不涉及代币的调用
+# Call without token pull
 node ./bin/run.js call --to 0xContract --data 0xabcdef --json
 ```
 
 ---
 
-### aba status / balance / policy / logs / doctor
+### `aba status / balance / policy / logs / doctor`
 
-查询命令。
+Query commands.
 
 ```bash
-node ./bin/run.js status [--json]     # 网络状态、绑定、Policy
-node ./bin/run.js balance [--json]    # Owner 和 TBA 余额
-node ./bin/run.js policy [--json]     # Policy 详情
-node ./bin/run.js logs [--last 20]    # 执行日志
-node ./bin/run.js doctor [--json]     # 环境诊断
+node ./bin/run.js status [--json]     # network status, binding, policy
+node ./bin/run.js balance [--json]    # owner and TBA balances
+node ./bin/run.js policy [--json]     # policy details
+node ./bin/run.js logs [--last 20]    # execution logs
+node ./bin/run.js doctor [--json]     # environment diagnostics
 ```
 
 ---
 
 ## Owner API
 
-Owner API 是供 NFT Owner 使用的后端服务，用于授权 Agent 操作。
+Owner API is a backend service for NFT owners to authorize Agent operations.
 
-### 启动服务
+### Start service
 
 ```bash
 npm run owner:api -- --listen localhost:3000 --owner-privatekey <PK>
 ```
 
-| 参数 | 说明 |
+| Parameter | Description |
 |------|------|
-| `--listen` | 监听地址 (默认: localhost:8787) |
-| `--owner-privatekey` | NFT Owner 私钥 |
+| `--listen` | Listen address (default: `localhost:8787`) |
+| `--owner-privatekey` | NFT owner private key |
 
-**启动成功输出:**
+**Successful startup output:**
 ```
 Owner API started.
 listen: http://localhost:3000
@@ -336,27 +337,27 @@ owner: 0x93c7629916a53DE8a7D46609a0585fD7FeDF3B45
 auth: none
 ```
 
-### API 端点
+### API endpoints
 
-#### GET /health
+#### `GET /health`
 
-健康检查。
+Health check.
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-#### GET /owner/capabilities
+#### `GET /owner/capabilities`
 
-列出可用端点。
+List available endpoints.
 
 ```bash
 curl http://localhost:3000/owner/capabilities
 ```
 
-#### POST /owner/create-policy
+#### `POST /owner/create-policy`
 
-创建 Policy，绑定 Agent 到 TBA。
+Create policy and bind Agent to TBA.
 
 ```bash
 curl -X POST http://localhost:3000/owner/create-policy \
@@ -371,44 +372,44 @@ curl -X POST http://localhost:3000/owner/create-policy \
   }'
 ```
 
-| 参数 | 必填 | 说明 |
+| Parameter | Required | Description |
 |------|------|------|
-| `policySigner` | | Agent 地址 (默认: state.agentSignerAddress) |
-| `budgetToken` | | 预算代币 (默认: USDT) |
-| `maxTotal` | | 最大预算 (默认: 100) |
-| `validUntil` | | 过期时间戳 (默认: 2030年) |
-| `targets` | | 白名单合约数组 |
-| `active` | | 是否激活 (默认: true) |
-| `dryRun` | | 模拟执行 |
+| `policySigner` | No | Agent address (default: `state.agentSignerAddress`) |
+| `budgetToken` | No | Budget token (default: USDT) |
+| `maxTotal` | No | Maximum budget (default: `100`) |
+| `validUntil` | No | Expiration timestamp (default: year 2030) |
+| `targets` | No | Whitelisted contract array |
+| `active` | No | Whether policy is active (default: `true`) |
+| `dryRun` | No | Simulation mode |
 
-#### POST /owner/adjust-policy
+#### `POST /owner/adjust-policy`
 
-调整 Policy 参数或更换 Agent。
+Adjust policy parameters or replace Agent signer.
 
 ```bash
-# 调整预算
+# Adjust budget
 curl -X POST http://localhost:3000/owner/adjust-policy \
   -H "Content-Type: application/json" \
   -d '{"maxTotal": "200"}'
 
-# 更换 Agent
+# Replace Agent signer
 curl -X POST http://localhost:3000/owner/adjust-policy \
   -H "Content-Type: application/json" \
   -d '{"signer": "0xNewAgentAddress"}'
 ```
 
-| 参数 | 说明 |
+| Parameter | Description |
 |------|------|
-| `signer` | 新 Agent 地址 (更换 Agent) |
-| `maxTotal` | 新最大预算 |
-| `validUntil` | 新过期时间戳 |
-| `targets` | 新白名单 |
-| `active` | 是否激活 |
-| `dryRun` | 模拟执行 |
+| `signer` | New Agent address (replace signer) |
+| `maxTotal` | New max budget |
+| `validUntil` | New expiration timestamp |
+| `targets` | New whitelist |
+| `active` | Whether policy is active |
+| `dryRun` | Simulation mode |
 
-#### POST /owner/approve
+#### `POST /owner/approve`
 
-授权代币给 TBA。
+Approve token allowance for TBA.
 
 ```bash
 curl -X POST http://localhost:3000/owner/approve \
@@ -416,42 +417,42 @@ curl -X POST http://localhost:3000/owner/approve \
   -d '{"amount": "100"}'
 ```
 
-| 参数 | 说明 |
+| Parameter | Description |
 |------|------|
-| `token` | 代币地址 (默认: USDT) |
-| `amount` | 授权数量 |
-| `max` | 授权最大值 (默认: true) |
-| `dryRun` | 模拟执行 |
+| `token` | Token address (default: USDT) |
+| `amount` | Approval amount |
+| `max` | Approve max amount (default: `true`) |
+| `dryRun` | Simulation mode |
 
 ---
 
-## 错误码
+## Error Codes
 
-| 错误码 | 说明 | 解决方案 |
+| Error Code | Description | Suggested Fix |
 |--------|------|---------|
-| `NO_BINDING` | 未绑定 NFT | 运行 `aba init` |
-| `POLICY_CREATE_REQUIRED` | Policy 未创建 | Owner API 创建 Policy |
-| `POLICY_INACTIVE` | Policy 未激活 | Owner API 激活 Policy |
-| `INVALID_SIGNER` | Agent 签名者不匹配 | 检查 agentSigner 私钥 |
-| `TARGET_NOT_ALLOWED` | 目标不在白名单 | 更新 Policy targets |
-| `BUDGET_EXCEEDED` | 预算不足 | 减少 pull-amount 或增加 maxTotal |
-| `BUDGET_OR_ALLOWANCE` | 预算或授权不足 | 增加 Policy 预算或 allowance |
+| `NO_BINDING` | NFT is not bound | Run `aba init` |
+| `POLICY_CREATE_REQUIRED` | Policy has not been created | Create policy via Owner API |
+| `POLICY_INACTIVE` | Policy is inactive | Reactivate policy via Owner API |
+| `INVALID_SIGNER` | Agent signer mismatch | Check `agentSigner` private key |
+| `TARGET_NOT_ALLOWED` | Target not in whitelist | Update policy targets |
+| `BUDGET_EXCEEDED` | Insufficient budget | Reduce `pull-amount` or increase `maxTotal` |
+| `BUDGET_OR_ALLOWANCE` | Budget or allowance insufficient | Increase policy budget or allowance |
 
 ---
 
-## 注意事项
+## Notes
 
-- 链默认为 Sepolia (`chainId=11155111`)
-- `aba init --nft-ca --token-id` 可直接覆盖绑定
-- `aba send` / `aba call` 通过 AA + Paymaster 执行，无需 Agent 支付 gas
-- 所有命令支持 `--json` 输出
-- Owner API 的 `/approve` 使用安全授权模式：非零授权时先重置为 0
-- `.aba/config.json` 和 `.aba/secrets.json` 都已加入 `.gitignore`，切勿提交
+- Default network is Sepolia (`chainId=11155111`)
+- `aba init --nft-ca --token-id` can directly overwrite existing binding
+- `aba send` / `aba call` runs through AA + Paymaster, so Agent does not pay gas
+- All commands support `--json` output
+- Owner API `/approve` uses safe-approval mode: resets non-zero allowance to `0` first
+- `.aba/config.json` and `.aba/secrets.json` are in `.gitignore`; never commit them
 
 ---
 
 ## Skills
 
-Agent Skills 位于 `cli/skills/` 目录，遵循 [Agent Skills 规范](https://agentskills.io)。
+Agent Skills are located in `cli/skills/` and follow the [Agent Skills specification](https://agentskills.io).
 
-详见: [skills/README.md](./skills/README.md)
+See: [skills/README.md](./skills/README.md)
